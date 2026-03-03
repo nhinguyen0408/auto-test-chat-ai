@@ -145,8 +145,13 @@ flowchart LR
   - Yêu cầu trả về **JSON thuần** theo schema đã định, không kèm text khác.
 3. Gọi `aiService.generateTestScript(prompt)`:
   - FE gọi tới backend proxy Node/Express (`/api/claude/generate-test`) thay vì gọi trực tiếp LLM để tránh CORS và ẩn API key.
-  - Parse JSON từ response, validate bằng `zod`.
-4. Nếu hợp lệ, lưu vào state `currentScenario` và hiển thị ở tab "Script test".
+  - Mặc định backend đang dùng **chế độ JSON steps** (mode = `json-steps`) để sinh ra cấu trúc `TestScenario` như hiện tại.
+  - Backend đã hỗ trợ thêm **chế độ sinh code Cypress-like** (mode = `cypress`) cho cùng endpoint:
+    - Khi body có `mode: "cypress"`, system prompt yêu cầu Claude trả về **duy nhất code JavaScript phong cách Cypress** (sử dụng đối tượng `cy` được inject ở browser).
+    - Code này được design để có thể thực thi ngay trong trình duyệt bằng cách truyền `cy` trỏ vào DOM của iframe (phần runner FE sẽ được bổ sung sau).
+    - Response từ Claude vẫn theo schema Messages API gốc (mảng `content[...]` chứa `text` là nội dung code).
+  - Ở MVP hiện tại, FE mới chỉ dùng mode JSON, phần chạy code Cypress trong browser là bước mở rộng tiếp theo.
+4. Nếu JSON hợp lệ, lưu vào state `currentScenario` và hiển thị ở tab "Script test".
 5. User bấm "Run test" để chạy với `testRunner`.
 
 ## Các bước triển khai (high level)

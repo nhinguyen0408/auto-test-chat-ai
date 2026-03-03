@@ -73,6 +73,8 @@ async function delay(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+type OutputMode = 'json' | 'cypress'
+
 async function runScenarioOnIframe(
   iframe: HTMLIFrameElement,
   scenario: TestScenario,
@@ -247,6 +249,150 @@ async function runScenarioOnIframe(
   }
 }
 
+interface CypressLikeApi {
+  visit: (url: string) => CypressLikeApi
+  get: (selector: string) => CypressLikeApi
+  contains: (text: string) => CypressLikeApi
+  click: () => CypressLikeApi
+  type: (value: string) => CypressLikeApi
+  should: (assertion: string, expected?: unknown) => CypressLikeApi
+}
+
+function createCyForIframe(
+  iframe: HTMLIFrameElement,
+  pushStep: (step: StepResult) => void,
+): { cy: CypressLikeApi; getSteps: () => StepResult[] } {
+  const doc = iframe.contentDocument
+  const steps: StepResult[] = []
+  let index = 0
+  let currentElements: HTMLElement[] = []
+
+  const log = (status: StepStatus, message: string) => {
+    const step: StepResult = {
+      stepId: `cypress-${index}`,
+      index,
+      status,
+      message,
+      timestamp: Date.now(),
+    }
+    index += 1
+    steps.push(step)
+    pushStep(step)
+  }
+
+  if (!doc) {
+    log('fail', 'Không truy cập được DOM trong iframe cho chế độ Cypress-like.')
+  }
+
+  const cy: CypressLikeApi = {
+    visit(url: string) {
+      if (!iframe || !url) {
+        log('fail', 'cy.visit: thiếu iframe hoặc URL')
+        return cy
+      }
+      iframe.src = url
+      log('pass', `cy.visit("${url}")`)
+      return cy
+    },
+    get(selector: string) {
+      if (!doc) {
+        log('fail', 'cy.get: không có document trong iframe')
+        return cy
+      }
+      const nodes = Array.from(doc.querySelectorAll<HTMLElement>(selector))
+      currentElements = nodes
+      if (nodes.length === 0) {
+        log('fail', `cy.get("${selector}"): không tìm thấy element nào`)
+      } else {
+        log('pass', `cy.get("${selector}") -> ${nodes.length} phần tử`)
+      }
+      return cy
+    },
+    contains(text: string) {
+      if (!doc) {
+        log('fail', 'cy.contains: không có document trong iframe')
+        return cy
+      }
+      const walker = doc.createTreeWalker(doc.body || doc, NodeFilter.SHOW_ELEMENT, null)
+      const matched: HTMLElement[] = []
+      while (walker.nextNode()) {
+        const el = walker.currentNode as HTMLElement
+        if ((el.textContent || '').includes(text)) {
+          matched.push(el)
+        }
+      }
+      currentElements = matched
+      if (matched.length === 0) {
+        log('fail', `cy.contains("${text}"): không tìm thấy element`)
+      } else {
+        log('pass', `cy.contains("${text}") -> ${matched.length} phần tử`)
+      }
+      return cy
+    },
+    click() {
+      if (currentElements.length === 0) {
+        log('fail', 'cy.click: không có element nào được chọn (cy.get / cy.contains trước đó)')
+        return cy
+      }
+      currentElements.forEach((el) => el.click())
+      log('pass', `cy.click() trên ${currentElements.length} phần tử`)
+      return cy
+    },
+    type(value: string) {
+      if (currentElements.length === 0) {
+        log('fail', 'cy.type: không có element nào được chọn')
+        return cy
+      }
+      currentElements.forEach((el) => {
+        const input = el as HTMLInputElement | HTMLTextAreaElement
+        input.focus()
+        input.value = value
+        const inputEvent = new Event('input', { bubbles: true })
+        const changeEvent = new Event('change', { bubbles: true })
+        input.dispatchEvent(inputEvent)
+        input.dispatchEvent(changeEvent)
+      })
+      log('pass', `cy.type("${value}")`)
+      return cy
+    },
+    should(assertion: string, expected?: unknown) {
+      if (currentElements.length === 0) {
+        log('fail', 'cy.should: không có element nào được chọn')
+        return cy
+      }
+      const el = currentElements[0]
+      try {
+        switch (assertion) {
+          case 'be.visible': {
+            const rect = el.getBoundingClientRect()
+            const visible = rect.width > 0 && rect.height > 0
+            if (!visible) throw new Error('Element không hiển thị')
+            break
+          }
+          case 'contain.text': {
+            const text = (el.textContent || '').trim()
+            if (!expected || typeof expected !== 'string' || !text.includes(expected)) {
+              throw new Error(`Text "${text}" không chứa "${String(expected)}"`)
+            }
+            break
+          }
+          default:
+            throw new Error(`Assertion chưa hỗ trợ: ${assertion}`)
+        }
+        log('pass', `cy.should("${assertion}", ${JSON.stringify(expected)})`)
+      } catch (err) {
+        log('fail', `cy.should("${assertion}") lỗi: ${(err as Error).message}`)
+      }
+      return cy
+    },
+  }
+
+  return {
+    cy,
+    getSteps: () => steps,
+  }
+}
+
 const darkTheme = createTheme({
   palette: {
     mode: 'dark',
@@ -302,10 +448,11 @@ function App() {
   )
 
   const [currentScenario, setCurrentScenario] = useState<TestScenario | null>(null)
-  const [scriptJson, setScriptJson] = useState<string>('// Script test sẽ xuất hiện ở đây\n')
+  const [scriptText, setScriptText] = useState<string>('// Script test sẽ xuất hiện ở đây\n')
   const [isCallingAi, setIsCallingAi] = useState(false)
   const [isRunningTest, setIsRunningTest] = useState(false)
   const [activeTab, setActiveTab] = useState<TabKey>('description')
+  const [outputMode, setOutputMode] = useState<OutputMode>('json')
 
   const [testResult, setTestResult] = useState<TestResult | null>(null)
   const [stepLiveLog, setStepLiveLog] = useState<StepResult[]>([])
@@ -323,15 +470,48 @@ function App() {
     setIsCallingAi(true)
     setActiveTab('script')
     try {
-      const scenario = await effectiveAiService.generateTestScript({
-        description: `${description}\n\nGhi chú/validate:\n${note}`,
-        targetUrl: targetUrl.trim() || loadedUrl,
-      })
-      setCurrentScenario(scenario)
-      setScriptJson(JSON.stringify(scenario, null, 2))
+      if (outputMode === 'json') {
+        const scenario = await effectiveAiService.generateTestScript({
+          description: `${description}\n\nGhi chú/validate:\n${note}`,
+          targetUrl: targetUrl.trim() || loadedUrl,
+        })
+        setCurrentScenario(scenario)
+        setScriptText(JSON.stringify(scenario, null, 2))
+      } else {
+        const baseUrl = import.meta.env.VITE_CLAUDE_PROXY_URL ?? 'http://localhost:4000'
+        const response = await fetch(`${baseUrl}/api/claude/generate-test`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            description: `${description}\n\nGhi chú/validate:\n${note}`,
+            targetUrl: targetUrl.trim() || loadedUrl,
+            mode: 'cypress',
+          }),
+        })
+
+        if (!response.ok) {
+          const text = await response.text().catch(() => '')
+          throw new Error(`Claude proxy lỗi (Cypress mode): ${response.status} ${response.statusText} ${text}`)
+        }
+
+        const data = (await response.json()) as {
+          content?: Array<{ type: string; text?: string }>
+        }
+
+        const textContent =
+          data.content?.find((c) => c.type === 'text')?.text ??
+          '// Không nhận được nội dung code từ Claude ở chế độ Cypress.'
+
+        const cleaned = textContent.replace(/```[a-z]*/gi, '').replace(/```/g, '').trim()
+
+        setCurrentScenario(null)
+        setScriptText(cleaned || '// (Empty Cypress-like code)')
+      }
     } catch (err) {
-      setScriptJson(
-        `// Lỗi khi generate script từ AI mock\n// ${String((err as Error).message ?? err)}`,
+      setScriptText(
+        `// Lỗi khi generate script từ AI\n// ${String((err as Error).message ?? err)}`,
       )
     } finally {
       setIsCallingAi(false)
@@ -339,7 +519,7 @@ function App() {
   }
 
   const handleRunTest = async () => {
-    if (!iframeRef.current || !currentScenario) {
+    if (!iframeRef.current) {
       return
     }
     setIsRunningTest(true)
@@ -348,18 +528,70 @@ function App() {
     setStepLiveLog([])
 
     try {
-      const result = await runScenarioOnIframe(iframeRef.current, currentScenario, {
-        continueOnFail: true,
-      }, (stepResult) => {
-        setStepLiveLog((prev) => [...prev, stepResult])
-      })
-      setTestResult(result)
+      if (outputMode === 'json') {
+        if (!currentScenario) {
+          setIsRunningTest(false)
+          return
+        }
+        const result = await runScenarioOnIframe(
+          iframeRef.current,
+          currentScenario,
+          {
+            continueOnFail: true,
+          },
+          (stepResult) => {
+            setStepLiveLog((prev) => [...prev, stepResult])
+          },
+        )
+        setTestResult(result)
+      } else {
+        const iframe = iframeRef.current
+        const { cy, getSteps } = createCyForIframe(iframe, (step) => {
+          setStepLiveLog((prev) => [...prev, step])
+        })
+
+        const startedAt = Date.now()
+
+        try {
+          const normalizedCode = scriptText
+            .replace(/\bexport\s+default\s+/g, '')
+            .replace(/\bexport\s+/g, '')
+
+          const runnerFactory = new Function(
+            'cy',
+            `"use strict";\n${normalizedCode}\nreturn typeof runCypressLikeTest === "function" ? runCypressLikeTest(cy) : null;`,
+          )
+          const maybePromise = runnerFactory(cy)
+          if (maybePromise && typeof maybePromise.then === 'function') {
+            await maybePromise
+          }
+        } catch (err) {
+          const errorStep: StepResult = {
+            stepId: 'cypress-runtime-error',
+            index: getSteps().length,
+            status: 'fail',
+            message: `Lỗi khi thực thi code Cypress-like: ${(err as Error).message}`,
+            timestamp: Date.now(),
+          }
+          setStepLiveLog((prev) => [...prev, errorStep])
+        }
+
+        const steps = getSteps()
+        const finishedAt = Date.now()
+        setTestResult({
+          scenarioId: 'cypress-code',
+          startedAt,
+          finishedAt,
+          steps,
+        })
+      }
     } finally {
       setIsRunningTest(false)
     }
   }
 
-  const totalSteps = currentScenario?.steps.length ?? 0
+  const totalSteps =
+    testResult?.steps.length ?? currentScenario?.steps.length ?? 0
   const passedSteps = testResult?.steps.filter((s) => s.status === 'pass').length ?? 0
   const failedSteps = testResult?.steps.filter((s) => s.status === 'fail').length ?? 0
 
@@ -489,6 +721,19 @@ function App() {
                   </Select>
                 </FormControl>
 
+                <FormControl size="small" sx={{ minWidth: 150 }}>
+                  <InputLabel id="output-mode-label">Output</InputLabel>
+                  <Select
+                    labelId="output-mode-label"
+                    label="Output"
+                    value={outputMode}
+                    onChange={(e) => setOutputMode(e.target.value as OutputMode)}
+                  >
+                    <MenuItem value="json">JSON steps</MenuItem>
+                    <MenuItem value="cypress">Cypress-like code</MenuItem>
+                  </Select>
+                </FormControl>
+
                 <Box flex={1} />
 
                 <Button
@@ -504,7 +749,7 @@ function App() {
                   size="small"
                   variant="contained"
                   color="primary"
-                  disabled={isRunningTest || !currentScenario}
+                  disabled={isRunningTest}
                   onClick={handleRunTest}
                 >
                   Run test
@@ -564,10 +809,10 @@ function App() {
                   <Box sx={{ flex: 1, borderRadius: 1, overflow: 'hidden', border: '1px solid rgba(30,64,175,0.7)' }}>
                     <Editor
                       height="260px"
-                      defaultLanguage="json"
+                      language={outputMode === 'cypress' ? 'javascript' : 'json'}
                       theme="vs-dark"
-                      value={scriptJson}
-                      onChange={(value) => setScriptJson(value ?? '')}
+                      value={scriptText}
+                      onChange={(value) => setScriptText(value ?? '')}
                       options={{
                         fontSize: 12,
                         minimap: { enabled: false },
