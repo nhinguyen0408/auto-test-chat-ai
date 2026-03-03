@@ -18,7 +18,7 @@ todos:
     content: Implement testRunner FE-only chạy script demo trên DOM iframe cùng origin (navigate/click/type/assert*), log từng bước vào tab kết quả.
     status: completed
   - id: implement-ai-service
-    content: Tạo aiService FE (interface generateTestScript) với mock implementation ngay trong `App.tsx`, trả về kịch bản demo từ mô tả và URL.
+    content: Tách aiService FE (interface generateTestScript) ra module riêng, dùng mock cho các model khác và tích hợp thật với Claude (gọi API messages) bằng env `VITE_CLAUDE_API_KEY` / `VITE_CLAUDE_MODEL`, nếu lỗi sẽ báo lỗi ra UI (không fallback sang mock).
     status: completed
   - id: wire-full-flow
     content: "Đã nối luồng: nhập mô tả → generate script (mock) → hiển thị/chỉnh sửa JSON → run → hiển thị log kết quả theo từng bước với PASS/FAIL."
@@ -94,11 +94,11 @@ flowchart LR
 
 - **Layout chung** (một trang duy nhất cho MVP):
   - **Header**: Tên tool, chọn model LLM, status (đang gọi AI, đang chạy test).
-  - **Main area chia 2 cột**:
-    - **Cột trái**:
+  - **Main area dạng các khối theo hàng (column)**:
+    - **Khối 1 – Ứng dụng cần test**:
       - Input URL target (`TextField`), nút "Load".
-      - `iframe` load URL, có chiều cao full, cho phép scroll.
-    - **Cột phải** (tabs):
+      - Vùng `iframe` load URL với tỉ lệ cố định **16:9** (CSS `aspect-ratio: 16 / 9`) tương ứng màn Full HD; nếu app cao hơn thì phần nội dung bên trong có thể scroll.
+    - **Khối 2 – Kịch bản test & AI (tabs)**:
       - **Tab "Mô tả kịch bản"**:
         - `Textarea`/editor cho mô tả natural language (VD: login, điền form, validate).
         - Khu vực upload/link tài liệu validate (giai đoạn 1 có thể là textarea thêm ghi chú).
@@ -144,7 +144,7 @@ flowchart LR
   - Giải thích ngắn về app, các kiểu step hỗ trợ.
   - Yêu cầu trả về **JSON thuần** theo schema đã định, không kèm text khác.
 3. Gọi `aiService.generateTestScript(prompt)`:
-  - Thực hiện `fetch` tới LLM API.
+  - FE gọi tới backend proxy Node/Express (`/api/claude/generate-test`) thay vì gọi trực tiếp LLM để tránh CORS và ẩn API key.
   - Parse JSON từ response, validate bằng `zod`.
 4. Nếu hợp lệ, lưu vào state `currentScenario` và hiển thị ở tab "Script test".
 5. User bấm "Run test" để chạy với `testRunner`.

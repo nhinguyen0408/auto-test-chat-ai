@@ -1,0 +1,5 @@
+express
+cors
+node-fetch
+dotenv
+

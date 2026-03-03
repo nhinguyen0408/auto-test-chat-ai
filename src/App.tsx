@@ -4,6 +4,7 @@ import {
   Button,
   Chip,
   Container,
+  CssBaseline,
   Divider,
   FormControl,
   InputLabel,
@@ -16,9 +17,9 @@ import {
   TextField,
   Typography,
 } from '@mui/material'
-import { CssBaseline } from '@mui/material'
 import { ThemeProvider, createTheme } from '@mui/material/styles'
 import Editor from '@monaco-editor/react'
+import { createAiService, type ModelKey } from './services/aiService'
 import './App.css'
 
 type StepType =
@@ -281,62 +282,6 @@ const darkTheme = createTheme({
 
 type TabKey = 'description' | 'script' | 'result'
 
-type ModelKey = 'mock' | 'openai' | 'gemini' | 'claude'
-
-interface AiService {
-  generateTestScript: (params: { description: string; targetUrl: string }) => Promise<TestScenario>
-}
-
-const mockAiService: AiService = {
-  async generateTestScript({ description, targetUrl }) {
-    const baseId = `demo-${Date.now()}`
-
-    const steps: TestStep[] = [
-      {
-        id: `${baseId}-navigate`,
-        type: 'navigate',
-        value: targetUrl || 'https://example.org',
-      },
-      {
-        id: `${baseId}-assert-title`,
-        type: 'assertVisible',
-        selector: 'h1, h2, [data-testid="page-title"]',
-      },
-    ]
-
-    if (description.toLowerCase().includes('login')) {
-      steps.push(
-        {
-          id: `${baseId}-type-username`,
-          type: 'type',
-          selector: 'input[name="username"], input[type="email"], [data-testid="username"]',
-          value: 'demo@example.com',
-        },
-        {
-          id: `${baseId}-type-password`,
-          type: 'type',
-          selector: 'input[name="password"], input[type="password"], [data-testid="password"]',
-          value: 'Password123!',
-        },
-        {
-          id: `${baseId}-click-submit`,
-          type: 'click',
-          selector: 'button[type="submit"], [data-testid="login-submit"]',
-        },
-      )
-    }
-
-    return {
-      id: baseId,
-      name: 'Kịch bản demo từ AI mock',
-      description:
-        description ||
-        'Kịch bản demo được sinh từ mock AI. Khi nối API thật, JSON sẽ theo cùng schema.',
-      steps,
-    }
-  },
-}
-
 function formatTimestamp(ts: number) {
   const d = new Date(ts)
   return d.toLocaleTimeString('vi-VN', { hour12: false })
@@ -365,17 +310,7 @@ function App() {
   const [testResult, setTestResult] = useState<TestResult | null>(null)
   const [stepLiveLog, setStepLiveLog] = useState<StepResult[]>([])
 
-  const effectiveAiService: AiService = useMemo(() => {
-    switch (selectedModel) {
-      case 'openai':
-      case 'gemini':
-      case 'claude':
-        return mockAiService
-      case 'mock':
-      default:
-        return mockAiService
-    }
-  }, [selectedModel])
+  const effectiveAiService = useMemo(() => createAiService(selectedModel), [selectedModel])
 
   const handleLoadUrl = () => {
     setLoadedUrl(targetUrl.trim() || 'about:blank')
@@ -548,9 +483,9 @@ function App() {
                     onChange={(e) => setSelectedModel(e.target.value as ModelKey)}
                   >
                     <MenuItem value="mock">Mock (local)</MenuItem>
-                    <MenuItem value="openai">OpenAI (sẽ nối sau)</MenuItem>
-                    <MenuItem value="gemini">Gemini (sẽ nối sau)</MenuItem>
-                    <MenuItem value="claude">Claude (sẽ nối sau)</MenuItem>
+                    <MenuItem value="openai">OpenAI (planned)</MenuItem>
+                    <MenuItem value="gemini">Gemini (planned)</MenuItem>
+                    <MenuItem value="claude">Claude (đã nối LLM)</MenuItem>
                   </Select>
                 </FormControl>
 
